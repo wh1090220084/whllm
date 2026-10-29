@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whllm"
+version = "0.1.0"
+description = "A 0.6B full-stack LLM training project with 32k context, BF16 and optional FP8 training."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [{name = "WH Project"}]
+dependencies = [
+  "torch>=2.9",
+  "transformers>=4.51,<5",
+  "datasets>=3.0",
+  "tokenizers>=0.20",
+  "sentencepiece>=0.2",
+  "numpy>=1.26,<3",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.8",
+  "streamlit>=1.40",
+  "openai>=1.40",
+  "requests>=2.32",
+  "swanlab>=0.5",
+]
+
+[project.optional-dependencies]
+fp8 = ["torchao>=0.15.0"]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["model*", "dataset*", "trainer*", "scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,14 @@
+torch>=2.9
+transformers>=4.51,<5
+datasets>=3.0
+tokenizers>=0.20
+sentencepiece>=0.2
+numpy>=1.26,<3
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.8
+streamlit>=1.40
+openai>=1.40
+requests>=2.32
+swanlab>=0.5
+pytest>=8

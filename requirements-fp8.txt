@@ -1,0 +1,4 @@
+-r requirements.txt
+# Optional: FP8 Linear training via torchao.float8.
+# Must be installed after a compatible PyTorch >= 2.9 build.
+torchao>=0.15.0
