@@ -2,12 +2,16 @@ import random
 import re
 import json
 import os
+import sys
 from threading import Thread
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
 import numpy as np
 import streamlit as st
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+from transformers import AutoModelForCausalLM, TextIteratorStreamer
+from trainer.trainer_utils import load_tokenizer
 
 st.set_page_config(page_title="WHLLM", initial_sidebar_state="collapsed")
 
@@ -201,10 +205,7 @@ def load_model_tokenizer(model_path):
         model_path,
         trust_remote_code=True
     )
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
-        trust_remote_code=True
-    )
+    tokenizer = load_tokenizer(model_path)
     model = model.half().eval().to(device)
     return model, tokenizer
 

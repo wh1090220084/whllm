@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from torch import Tensor
 from torch.nn.parallel import DistributedDataParallel
-from transformers import AutoTokenizer
+from trainer.trainer_utils import load_tokenizer
 
 
 # ===== 计算每个 token 的 logprob =====
@@ -101,7 +101,7 @@ class SGLangRolloutEngine(RolloutEngine):
         self.base_url = base_url.rstrip('/')
         self.shared_ckpt_path = shared_ckpt_path
         self.timeout = timeout
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        self.tokenizer = load_tokenizer(model_path)
         self.http = requests
     
     def rollout(self, prompt_ids: Tensor, attention_mask: Tensor, num_generations: int, max_new_tokens: int, temperature: float = 0.8) -> RolloutResult:

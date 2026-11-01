@@ -11,6 +11,7 @@ import math
 import numpy as np
 import torch
 import torch.distributed as dist
+import transformers
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import Sampler
 from transformers import AutoTokenizer, AutoConfig, AutoModel, AutoModelForSequenceClassification
@@ -117,8 +118,38 @@ def lm_checkpoint(lm_config, weight='full_sft', model=None, optimizer=None, epoc
         return None
 
 
+def load_tokenizer(model_path):
+    """Load a tokenizer with version-compatible regex fixes."""
+    kwargs = {"trust_remote_code": True}
+    try:
+        major, minor = (int(part) for part in transformers.__version__.split(".")[:2])
+        if major == 4 and minor >= 57:
+            kwargs["fix_mistral_regex"] = True
+    except (AttributeError, TypeError, ValueError):
+        pass
+    try:
+        return AutoTokenizer.from_pretrained(model_path, **kwargs)
+    except (AttributeError, TypeError):
+        kwargs.pop("fix_mistral_regex", None)
+        return AutoTokenizer.from_pretrained(model_path, **kwargs)
+
+
+def sync_config_with_tokenizer(lm_config, tokenizer):
+    """Keep model vocabulary and special-token IDs aligned with the tokenizer."""
+    vocab_size = max(int(getattr(tokenizer, "vocab_size", 0) or 0), len(tokenizer))
+    if vocab_size <= 0:
+        raise ValueError("tokenizer has no usable vocabulary")
+    lm_config.vocab_size = vocab_size
+    for attribute in ("bos_token_id", "eos_token_id", "pad_token_id"):
+        token_id = getattr(tokenizer, attribute, None)
+        if token_id is not None:
+            setattr(lm_config, attribute, token_id)
+    return lm_config
+
+
 def init_model(lm_config, from_weight='pretrain', tokenizer_path='../model', save_dir='../out', device='cuda'):
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+    tokenizer = load_tokenizer(tokenizer_path)
+    sync_config_with_tokenizer(lm_config, tokenizer)
     model = WhForCausalLM(lm_config)
 
     if from_weight!= 'none':
@@ -160,7 +191,7 @@ class SkipBatchSampler(Sampler):
 
 class LMForRewardModel:
     def __init__(self, model_path, device="cuda", dtype=torch.float16):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        self.tokenizer = load_tokenizer(model_path)
         config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
         # InternLM2's remote code cannot read the normalized rope_scaling format
         # used by newer Transformers. Restore the original value from config.json.

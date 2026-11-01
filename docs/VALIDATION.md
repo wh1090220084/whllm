@@ -38,7 +38,14 @@ Temporary JSONL files were loaded through:
 - `SFTDataset`
 - `DPODataset`
 
-Tokenizer loaded successfully with 6400 tokens.
+Multiple JSONL files under one directory are discovered recursively, sorted, and
+concatenated. A temporary two-file directory was loaded into one `PretrainDataset`.
+SFT shards using either `messages` or `conversations`, including files with both and
+extra columns, were normalized into one conversation dataset. The real
+`data/pretrain` directory currently contains three JSONL shards; the large shards
+were enumerated but not fully loaded during validation.
+
+Tokenizer loaded successfully with 6400 tokens; BOS/EOS/PAD are 1/2/0.
 
 ### Training Loop Smoke Tests
 
@@ -72,8 +79,9 @@ The following completed one CPU step with a reduced 64-hidden/2-layer model:
 - CPU `GradScaler` unscale/step/update protocol: passed.
 - Static compilation and imports of all eight training entry points: passed.
 - Full GPU/FP8 training and convergence comparison: not run in this workspace.
-- MoE design calculation: 32 layers, hidden 1280, 8 experts, top-3, expert
-  width 464 gives ~595.8M total and ~310.7M active parameters.
+- Default MoE profile: 32 layers, hidden 1280, 8 experts, top-3, expert width
+  464, vocabulary 6400 gives ~595.8M total and ~310.7M active parameters.
+- Dense profile: 32 layers with the same vocabulary gives ~599.4M.
 - FP8 conversion filter: inspected against torchao 0.15.0 and 0.18.0 source;
   tied output heads and router/small matrices are excluded from Float8Linear.
 - FP8 autograd view shim: reproduced the exact forward view+inplace error with

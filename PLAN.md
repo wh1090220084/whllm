@@ -104,3 +104,38 @@
 - Top-3 increases active compute versus top-1 but is still sparse versus running all 8 experts.
 - Rollback restores the prior MoE width and expert count in the config defaults.
 
+
+## DeepSeek Tokenizer + 0.6B MoE Migration (2026-10-30)
+
+### Authorization and Target
+
+- User requested implementation of the analyzed DeepSeek-tokenizer design.
+- Target: model configs, default model profile, training defaults, tests, and docs.
+
+### Selected Design
+
+- Vocabulary: 129280; BOS/EOS/PAD IDs: 0/1/2.
+- Default MoE profile: 30 layers, hidden 1280, 8 experts, top-3, expert width 336.
+- Expected total parameters: approximately 598.4M.
+- Dense compatibility profile: 24 layers with the same vocabulary, approximately 608.9M.
+
+### Exclusions
+
+- Do not copy DeepSeek V4.1's 40-layer/384-expert architecture into WHLLM.
+- Do not invent a chat template that was not supplied with the tokenizer.
+- Old 6400-vocabulary checkpoints and optimizer states are not resume-compatible.
+
+### Validation
+
+- Parse and load the new tokenizer.
+- Verify vocabulary size, BOS/EOS/PAD IDs, context length, and EOS label preservation.
+- Verify dense and MoE parameter counts on meta device.
+- Compile and import affected model/training/inference modules.
+
+
+### Current Tokenizer Decision (2026-10-30)
+
+- The DeepSeek-tokenizer experiment was reverted.
+- Active profile: 6400-token vocabulary with BOS/EOS/PAD 1/2/0.
+- Default MoE remains 32 layers, 8 experts, top-3, expert width 464.
+

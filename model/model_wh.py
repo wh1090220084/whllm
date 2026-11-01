@@ -15,7 +15,7 @@ class WhConfig(PretrainedConfig):
     QK-Norm, SwiGLU, RoPE/YaRN and optional top-k MoE.
     """
     model_type = "wh"
-    def __init__(self, hidden_size=1280, num_hidden_layers=32, use_moe=False, **kwargs):
+    def __init__(self, hidden_size=1280, num_hidden_layers=32, use_moe=True, **kwargs):
         super().__init__(**kwargs)
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
@@ -24,6 +24,7 @@ class WhConfig(PretrainedConfig):
         self.vocab_size = kwargs.get("vocab_size", 6400)
         self.bos_token_id = kwargs.get("bos_token_id", 1)
         self.eos_token_id = kwargs.get("eos_token_id", 2)
+        self.pad_token_id = kwargs.get("pad_token_id", 0)
         self.flash_attn = kwargs.get("flash_attn", True)
         self.num_attention_heads = kwargs.get("num_attention_heads", 16)
         self.num_key_value_heads = kwargs.get("num_key_value_heads", 4)
@@ -59,8 +60,8 @@ class WhConfig(PretrainedConfig):
         ### MoE specific configs (ignored if use_moe = False)
         self.num_experts = kwargs.get("num_experts", 8)
         self.num_experts_per_tok = kwargs.get("num_experts_per_tok", 3)
-        # 464 keeps the standard 32-layer, hidden-1280 MoE near 0.6B total
-        # parameters while activating only three of eight experts per token.
+        # 464 with 32 layers keeps the 6400-vocabulary MoE near 0.6B total
+        # parameters while activating three of eight experts per token.
         self.moe_intermediate_size = kwargs.get("moe_intermediate_size", 464)
         if self.num_experts < 1:
             raise ValueError("num_experts must be positive")
@@ -317,7 +318,9 @@ class WhForCausalLM(PreTrainedModel, GenerationMixin):
     
     # Custom generation loop, kept small and dependency-free.
     @torch.inference_mode()
-    def generate(self, inputs=None, attention_mask=None, max_new_tokens=4096, temperature=0.85, top_p=0.85, top_k=50, eos_token_id=2, streamer=None, use_cache=True, num_return_sequences=1, do_sample=True, repetition_penalty=1.0, **kwargs):
+    def generate(self, inputs=None, attention_mask=None, max_new_tokens=4096, temperature=0.85, top_p=0.85, top_k=50, eos_token_id=None, streamer=None, use_cache=True, num_return_sequences=1, do_sample=True, repetition_penalty=1.0, **kwargs):
+        if eos_token_id is None:
+            eos_token_id = getattr(self.config, "eos_token_id", None)
         input_ids = kwargs.pop("input_ids", inputs).repeat(num_return_sequences, 1)
         attention_mask = attention_mask.repeat(num_return_sequences, 1) if attention_mask is not None else None
         past_key_values = kwargs.pop("past_key_values", None)

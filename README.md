@@ -12,7 +12,7 @@ The requested names **Qwen3.8** and **DeepSeekV4.1** do not have a public, repro
 
 | Item | Default |
 |---|---:|
-| Parameters | ~599.4M dense; ~595.8M MoE total; ~310.7M MoE active |
+| Parameters | ~595.8M MoE total; ~310.7M MoE active; ~599.4M dense |
 | Layers | 32 |
 | Hidden size | 1280 |
 | Attention | GQA, 16 Q heads / 4 KV heads |
@@ -22,11 +22,18 @@ The requested names **Qwen3.8** and **DeepSeekV4.1** do not have a public, repro
 | Context | 32768 positions |
 | RoPE theta | 1,000,000 |
 | Normalization | RMSNorm + QK-Norm |
-| MoE variant | 8 experts / top-3, expert width 464 |
+| Default MoE profile | 8 experts / top-3, expert width 464 |
 | Default train precision | BF16 |
 | Optional train precision | FP8 Linear + BF16 surrounding computation |
 
-The exact config is in [`configs/wh_0_6b.json`](configs/wh_0_6b.json). A MoE variant is in [`configs/wh_0_6b_moe.json`](configs/wh_0_6b_moe.json).
+The default profile is the 32-layer top-3 MoE config in
+[`configs/wh_0_6b_moe.json`](configs/wh_0_6b_moe.json). The dense profile is in
+[`configs/wh_0_6b.json`](configs/wh_0_6b.json).
+
+Training synchronizes `vocab_size`, `bos_token_id`, `eos_token_id`, and
+`pad_token_id` from the tokenizer before constructing the model. Replacing the
+tokenizer therefore changes the embedding/head parameter count and requires a new
+training run; old checkpoints with a different vocabulary are not directly compatible.
 
 ## Project Layout
 
@@ -66,7 +73,7 @@ states saved by the previous AdamW-only implementation are not resume-compatible
 ```bash
 cd trainer
 torchrun --nproc_per_node 8 train_pretrain.py \
-  --data_path ../data/pretrain.jsonl \
+  --data_path ../data/pretrain \
   --max_seq_len 32768 \
   --gradient_checkpointing 1
 ```
@@ -76,7 +83,7 @@ torchrun --nproc_per_node 8 train_pretrain.py \
 ```bash
 cd trainer
 torchrun --nproc_per_node 8 train_full_sft.py \
-  --data_path ../data/sft.jsonl \
+  --data_path ../data/sft \
   --max_seq_len 32768 \
   --gradient_checkpointing 1
 ```
@@ -147,13 +154,29 @@ may increase peak temporary FP8 memory.
 
 ## Data Formats
 
-Pretrain:
+Each stage reads a directory recursively for `*.jsonl` files. The files are
+sorted by path and concatenated into one training split. A single file path is
+also accepted.
+
+```text
+data/pretrain/*.jsonl
+data/sft/*.jsonl
+data/dpo/*.jsonl
+data/rlaif/*.jsonl
+data/agent_rl/*.jsonl
+```
+
+Pretrain record:
 
 ```json
 {"text": "text for next-token prediction"}
 ```
 
 SFT / RLAIF:
+
+Either `conversations` or `messages` is accepted; both are normalized to the
+internal `conversations` field. Files may contain either key, and extra columns
+are ignored.
 
 ```json
 {"conversations": [
@@ -210,7 +233,9 @@ streamlit run web_demo.py
 - Generation is capped so prompt tokens plus generated tokens do not exceed 32768.
 - Training defaults enable activation gradient checkpointing; disable it with `--gradient_checkpointing 0` when you have enough VRAM.
 - Long-context training still requires careful memory planning. This scaffold provides DDP, gradient accumulation, and checkpointing, but does not claim production-grade sequence parallelism or asynchronous RL.
-- The included tokenizer is derived from the reference project and has a 6400-token vocabulary; a different tokenizer requires matching embedding weights and retraining.
+- The included tokenizer has a 6400-token vocabulary with BOS/EOS/PAD IDs 1/2/0.
+  A different tokenizer requires matching embeddings, special-token IDs, and a
+  fresh training run because old embedding and optimizer states are incompatible.
 
 ## Tests
 

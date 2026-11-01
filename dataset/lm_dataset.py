@@ -3,8 +3,127 @@ import torch
 import json
 import os
 import random
-from datasets import load_dataset, Features, Sequence, Value
+from pathlib import Path
+from datasets import Dataset as HFDataset, concatenate_datasets, load_dataset
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+def resolve_jsonl_files(data_path):
+    """Return one JSONL file or all JSONL files below a dataset directory."""
+    path = Path(data_path).expanduser()
+    if path.is_dir():
+        files = sorted(
+            (candidate for candidate in path.rglob("*") if candidate.is_file() and candidate.suffix.lower() == ".jsonl"),
+            key=lambda candidate: str(candidate).lower(),
+        )
+    elif path.is_file():
+        files = [path]
+    else:
+        raise FileNotFoundError(f"dataset path does not exist: {path}")
+    if not files:
+        raise FileNotFoundError(f"no .jsonl files found under dataset path: {path}")
+    return [str(file_path) for file_path in files]
+
+
+def _normalize_conversations(value):
+    """Normalize common chat JSON shapes to a list of message dictionaries."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = json.loads(value)
+    if isinstance(value, dict):
+        for key in ("messages", "conversations"):
+            if key in value:
+                value = value[key]
+                break
+    if not isinstance(value, list):
+        raise ValueError(f"conversation field must be a list, got {type(value).__name__}")
+
+    normalized = []
+    for message in value:
+        if not isinstance(message, dict):
+            raise ValueError(f"chat message must be an object, got {type(message).__name__}")
+        item = dict(message)
+        content = item.get("content", "")
+        if content is None:
+            content = ""
+        elif not isinstance(content, str):
+            if isinstance(content, list):
+                content = "".join(
+                    str(part.get("text", "")) if isinstance(part, dict) else str(part)
+                    for part in content
+                )
+            else:
+                content = str(content)
+
+        def json_text(value):
+            if value is None or value == [] or value == {}:
+                return ""
+            if isinstance(value, str):
+                return "" if value.strip() in {"", "[]", "{}", "null"} else value
+            return json.dumps(value, ensure_ascii=False)
+
+        reasoning = item.get("reasoning_content", "")
+        if reasoning is None:
+            reasoning = ""
+        elif not isinstance(reasoning, str):
+            reasoning = json_text(reasoning)
+
+        # Keep a fixed message schema so Arrow does not infer incompatible
+        # structs from rows that include or omit tools/tool_calls.
+        normalized.append({
+            "role": str(item.get("role", "")),
+            "content": content,
+            "reasoning_content": reasoning,
+            "tools": json_text(item.get("tools")),
+            "tool_calls": json_text(item.get("tool_calls")),
+        })
+    return normalized
+
+
+def _conversations_from_record(record, keys=("conversations", "messages", "conversation")):
+    for key in keys:
+        value = record.get(key)
+        if value:
+            conversations = _normalize_conversations(value)
+            if conversations:
+                return conversations
+    return []
+
+
+def _iter_normalized_records(data_file, file_mtime_ns, file_size):
+    del file_mtime_ns, file_size  # Included in the cache fingerprint.
+    with open(data_file, "r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{data_file}:{line_number}: invalid JSON: {exc}") from exc
+            conversations = _conversations_from_record(record)
+            if not conversations:
+                raise ValueError(f"{data_file}:{line_number}: no messages/conversations field")
+            yield {"conversations": conversations}
+
+
+def _load_conversation_dataset(data_files):
+    """Load heterogeneous conversation JSONL shards with one stable schema."""
+    parts = []
+    for data_file in data_files:
+        stat = Path(data_file).stat()
+        part = HFDataset.from_generator(
+            _iter_normalized_records,
+            gen_kwargs={
+                "data_file": data_file,
+                "file_mtime_ns": stat.st_mtime_ns,
+                "file_size": stat.st_size,
+            },
+        )
+        parts.append(part)
+    return concatenate_datasets(parts)
+
 
 def pre_processing_chat(conversations, add_system_ratio=0.2):
     # tool use 数据完整保留不做处理
@@ -39,7 +158,8 @@ class PretrainDataset(Dataset):
         super().__init__()
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.samples = load_dataset('json', data_files=data_path, split='train')
+        self.data_files = resolve_jsonl_files(data_path)
+        self.samples = load_dataset('json', data_files=self.data_files, split='train')
 
     def __len__(self):
         return len(self.samples)
@@ -48,10 +168,13 @@ class PretrainDataset(Dataset):
         sample = self.samples[index]
         tokens = self.tokenizer(str(sample['text']), add_special_tokens=False, max_length=self.max_length - 2, truncation=True).input_ids
         tokens = [self.tokenizer.bos_token_id] + tokens + [self.tokenizer.eos_token_id]
-        input_ids = tokens + [self.tokenizer.pad_token_id] * (self.max_length - len(tokens))
+        valid_length = len(tokens)
+        input_ids = tokens + [self.tokenizer.pad_token_id] * (self.max_length - valid_length)
         input_ids = torch.tensor(input_ids, dtype=torch.long)
         labels = input_ids.clone()
-        labels[input_ids == self.tokenizer.pad_token_id] = -100
+        # Mask by position rather than token ID: some tokenizers intentionally
+        # use the same ID for padding and EOS, and EOS must remain a target.
+        labels[valid_length:] = -100
         return input_ids, labels
 
 
@@ -60,8 +183,8 @@ class SFTDataset(Dataset):
         super().__init__()
         self.tokenizer = tokenizer
         self.max_length = max_length
-        features = Features({'conversations': [{'role': Value('string'), 'content': Value('string'), 'reasoning_content': Value('string'), 'tools': Value('string'), 'tool_calls': Value('string')}]})
-        self.samples = load_dataset('json', data_files=jsonl_path, split='train', features=features)
+        self.data_files = resolve_jsonl_files(jsonl_path)
+        self.samples = _load_conversation_dataset(self.data_files)
         self.bos_id = tokenizer(f'{tokenizer.bos_token}assistant\n', add_special_tokens=False).input_ids
         self.eos_id = tokenizer(f'{tokenizer.eos_token}\n', add_special_tokens=False).input_ids
 
@@ -127,7 +250,8 @@ class DPODataset(Dataset):
         self.padding = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
         self.bos_id = tokenizer(f'{tokenizer.bos_token}assistant\n', add_special_tokens=False).input_ids
         self.eos_id = tokenizer(f'{tokenizer.eos_token}\n', add_special_tokens=False).input_ids
-        self.samples = load_dataset('json', data_files=file_path, split='train')
+        self.data_files = resolve_jsonl_files(file_path)
+        self.samples = load_dataset('json', data_files=self.data_files, split='train')
 
     def __len__(self):
         return len(self.samples)
@@ -198,7 +322,8 @@ class RLAIFDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.thinking_ratio = thinking_ratio  # 按概率开启 thinking
-        self.samples = load_dataset('json', data_files=jsonl_path, split='train')
+        self.data_files = resolve_jsonl_files(jsonl_path)
+        self.samples = _load_conversation_dataset(self.data_files)
         self.bos_id = tokenizer(f'{tokenizer.bos_token}assistant', add_special_tokens=False).input_ids
         self.eos_id = tokenizer(f'{tokenizer.eos_token}', add_special_tokens=False).input_ids
 
@@ -229,9 +354,18 @@ class AgentRLDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.samples = []
-        with open(jsonl_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                self.samples.append(json.loads(line.strip()))
+        self.data_files = resolve_jsonl_files(jsonl_path)
+        for data_file in self.data_files:
+            with open(data_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        record = json.loads(line)
+                        conversations = _conversations_from_record(record)
+                        if not conversations:
+                            raise ValueError(f"{data_file}: record has no messages/conversations field")
+                        record["conversations"] = conversations
+                        self.samples.append(record)
 
     def __len__(self):
         return len(self.samples)

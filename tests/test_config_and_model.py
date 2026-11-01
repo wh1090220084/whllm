@@ -7,9 +7,10 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("transformers")
 
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM
 
 from model.model_wh import WhConfig, WhForCausalLM
+from trainer.trainer_utils import load_tokenizer, sync_config_with_tokenizer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,25 +27,31 @@ def small_config():
         vocab_size=128,
         max_position_embeddings=64,
         dropout=0.0,
+        use_moe=False,
     )
 
 
 def test_config_files_are_consistent():
     base = json.loads((ROOT / "configs" / "wh_0_6b.json").read_text(encoding="utf-8"))
-    cfg = WhConfig()
-    assert base["hidden_size"] == cfg.hidden_size == 1280
-    assert base["num_hidden_layers"] == cfg.num_hidden_layers == 32
-    assert base["num_attention_heads"] == cfg.num_attention_heads == 16
-    assert base["num_key_value_heads"] == cfg.num_key_value_heads == 4
-    assert base["head_dim"] == cfg.head_dim == 80
-    assert base["intermediate_size"] == cfg.intermediate_size == 3744
-    assert base["max_position_embeddings"] == cfg.max_position_embeddings == 32768
+    assert base["hidden_size"] == 1280
+    assert base["num_hidden_layers"] == 24
+    assert base["num_attention_heads"] == 16
+    assert base["num_key_value_heads"] == 4
+    assert base["head_dim"] == 80
+    assert base["intermediate_size"] == 3744
+    assert base["max_position_embeddings"] == 32768
+    assert base["vocab_size"] == 6400
+    assert (base["bos_token_id"], base["eos_token_id"], base["pad_token_id"]) == (1, 2, 0)
+    assert base["use_moe"] is False
 
     moe = json.loads((ROOT / "configs" / "wh_0_6b_moe.json").read_text(encoding="utf-8"))
+    cfg = WhConfig()
     assert moe["use_moe"] is True
+    assert moe["num_hidden_layers"] == cfg.num_hidden_layers == 32
     assert moe["num_experts"] == cfg.num_experts == 8
     assert moe["num_experts_per_tok"] == cfg.num_experts_per_tok == 3
     assert moe["moe_intermediate_size"] == cfg.moe_intermediate_size == 464
+    assert moe["vocab_size"] == cfg.vocab_size == 6400
 
 
 def test_default_parameter_count_is_about_0_6b():
@@ -105,9 +112,11 @@ def test_auto_classes_load_saved_model_without_fallback_warning(tmp_path, caplog
 
 def test_auto_tokenizer_does_not_fall_back_to_base_config(caplog):
     with caplog.at_level(logging.WARNING, logger="transformers.configuration_utils"):
-        tokenizer = AutoTokenizer.from_pretrained(ROOT / "model")
+        tokenizer = load_tokenizer(ROOT / "model")
 
-    assert tokenizer.vocab_size == 6400
+    assert len(tokenizer) == max(tokenizer.get_vocab().values()) + 1
+    assert (tokenizer.bos_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id) == (1, 2, 0)
+    assert tokenizer.model_max_length == 32768
     assert "to instantiate a model of type ``" not in caplog.text
 
 
@@ -119,6 +128,7 @@ def test_moe_parameter_count_is_about_0_6b():
     assert 590_000_000 <= total <= 610_000_000, total
     assert cfg.num_experts == 8
     assert cfg.num_experts_per_tok == 3
+    assert cfg.moe_intermediate_size == 464
 
 
 def test_tiny_moe_top3_forward_and_backward():
@@ -132,3 +142,20 @@ def test_tiny_moe_top3_forward_and_backward():
     out = model(input_ids, labels=input_ids)
     assert out.logits.shape == (2, 8, cfg.vocab_size)
     out.loss.backward()
+
+
+class _FakeTokenizer:
+    vocab_size = 129280
+    bos_token_id = 0
+    eos_token_id = 1
+    pad_token_id = 2
+
+    def __len__(self):
+        return 129280
+
+
+def test_tokenizer_syncs_vocab_and_special_ids():
+    cfg = WhConfig()
+    sync_config_with_tokenizer(cfg, _FakeTokenizer())
+    assert cfg.vocab_size == 129280
+    assert (cfg.bos_token_id, cfg.eos_token_id, cfg.pad_token_id) == (0, 1, 2)
